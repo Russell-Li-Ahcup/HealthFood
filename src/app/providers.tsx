@@ -2,9 +2,7 @@
 
 import { useEffect } from "react";
 import { AppShell } from "@/components/app-shell";
-import { useDataStore } from "@/lib/store/data-store";
-import { ensurePlans } from "@/lib/actions";
-import { startSyncScheduler, waitForSyncIdle } from "@/lib/sync";
+import { startPersistFlush, useDataStore } from "@/lib/store/data-store";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const init = useDataStore((s) => s.init);
@@ -17,14 +15,31 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!loaded) return;
-    const stop = startSyncScheduler();
-    // Pull remote first so a new device doesn't generate plans over synced ones.
-    const timer = setTimeout(() => {
-      void waitForSyncIdle().then(() => ensurePlans());
-    }, 3000);
+    const stopPersist = startPersistFlush();
+    let cancelled = false;
+    let stopSync = () => {};
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    void (async () => {
+      const { startSyncScheduler, waitForSyncIdle } = await import("@/lib/sync");
+      if (cancelled) return;
+      stopSync = startSyncScheduler();
+      // Pull remote first so a new device doesn't generate plans over synced ones.
+      await new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 3000);
+      });
+      if (cancelled) return;
+      await waitForSyncIdle();
+      if (cancelled) return;
+      const { ensurePlans } = await import("@/lib/actions");
+      await ensurePlans();
+    })();
+
     return () => {
-      stop();
+      cancelled = true;
       clearTimeout(timer);
+      stopSync();
+      stopPersist();
     };
   }, [loaded]);
 

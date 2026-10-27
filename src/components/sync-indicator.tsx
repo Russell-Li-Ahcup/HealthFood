@@ -7,8 +7,9 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { loadSyncConfig, SYNC_CONFIG_CHANGED_EVENT } from "@/lib/storage/local";
 import { useDataStore } from "@/lib/store/data-store";
-import { loadLastSyncSuccess, SYNC_SUCCESS_EVENT, syncNow } from "@/lib/sync";
 import { cn } from "./ui";
+
+const SYNC_SUCCESS_EVENT = "healthfood-sync-success";
 
 export function SyncIndicator() {
   const status = useDataStore((s) => s.syncStatus);
@@ -20,7 +21,7 @@ export function SyncIndicator() {
   useEffect(() => {
     const refresh = () => {
       void loadSyncConfig().then((c) => setConfigured(Boolean(c)));
-      void loadLastSyncSuccess().then(setLast);
+      void import("@/lib/sync").then((m) => m.loadLastSyncSuccess()).then(setLast);
     };
     refresh();
     window.addEventListener(SYNC_CONFIG_CHANGED_EVENT, refresh);
@@ -46,7 +47,7 @@ export function SyncIndicator() {
   const Icon = status === "syncing" ? Loader2 : status === "error" ? CloudAlert : status === "synced" ? CloudCheck : Cloud;
   return (
     <button
-      onClick={() => void syncNow().catch(() => {})}
+      onClick={() => void import("@/lib/sync").then((m) => m.syncNow()).catch(() => {})}
       title={status === "error" ? message : `${message || lastText}（点击立即同步）`}
       className={cn(
         "flex items-center gap-1 rounded-lg px-2 py-1 text-xs hover:bg-gray-100",

@@ -1,6 +1,7 @@
 "use client";
 
-import { ChevronLeft, ChevronRight, Info, Shuffle, ShoppingCart, Sparkles } from "lucide-react";
+import Link from "next/link";
+import { ChevronLeft, ChevronRight, Info, Shuffle, ShoppingCart, Sparkles, BookOpen } from "lucide-react";
 import { useMemo, useState } from "react";
 import { MealCell } from "@/components/meal-cell";
 import { BmiModeHint } from "@/components/mode-switch";
@@ -11,14 +12,19 @@ import { fmt, useTargets } from "@/lib/hooks";
 import { MODE_CONFIG } from "@/lib/nutrition/modes";
 import { useCycleView } from "@/lib/plan-view";
 import { cycleContaining, shoppingCycle } from "@/lib/shopping/schedule";
+import { isUserPlannedMeal } from "@/lib/schema/data";
 import { useDataStore } from "@/lib/store/data-store";
 
 export default function PlanPage() {
-  const data = useDataStore((s) => s.data);
+  const mode = useDataStore((s) => s.data.profile?.mode ?? "maintain");
+  const settings = useDataStore((s) => s.data.settings);
+  const shoppingTrips = useDataStore((s) => s.data.shoppingTrips);
   const targets = useTargets();
-  const mode = data.profile?.mode ?? "maintain";
   const today = todayKey();
-  const tripDates = useMemo(() => effectiveTripDates(data, weekStartOf(today), today), [data, today]);
+  const tripDates = useMemo(
+    () => effectiveTripDates({ settings, shoppingTrips }, weekStartOf(today), today),
+    [settings, shoppingTrips, today],
+  );
   const cycles = useMemo(() => {
     const current = cycleContaining(tripDates, today);
     const later = tripDates.filter((d) => d > current.start);
@@ -28,6 +34,12 @@ export default function PlanPage() {
   const start = cycles[Math.min(idx, cycles.length - 1)] ?? today;
   const cycle = shoppingCycle(tripDates, start);
   const { days, tripDates: viewTrips, hasPlan, length } = useCycleView(cycle.start, cycle.end);
+  const recipes = useDataStore((s) => s.data.recipes);
+  const recipeMap = useMemo(() => new Map(recipes.map((r) => [r.id, r])), [recipes]);
+  const userMealCount = useMemo(
+    () => days.reduce((n, d) => n + d.entries.filter((e) => isUserPlannedMeal(e, e.recipeId ? recipeMap.get(e.recipeId) : undefined)).length, 0),
+    [days, recipeMap],
+  );
   const [busy, setBusy] = useState(false);
 
   const regenerate = async (reseed: boolean) => {
@@ -48,7 +60,7 @@ export default function PlanPage() {
         subtitle={
           targets && (
             <>
-              参考每日 {fmt(targets.kcal)} 千卡 / 蛋白 {targets.proteinG} g · 随机排出到下次采购前的 {length} 天，再按这些菜决定买多少
+              参考每日 {fmt(targets.kcal)} 千卡 / 蛋白 {targets.proteinG} g · 本段 {length} 天；突出「我的」菜单，推荐菜仅作营养占位
             </>
           )
         }
@@ -65,27 +77,38 @@ export default function PlanPage() {
                 <ChevronRight size={18} />
               </button>
             </div>
-            <Button onClick={() => regenerate(hasPlan)} disabled={busy}>
+            <Link href="/recipes">
+              <Button variant="secondary">
+                <BookOpen size={16} /> 我的菜单
+              </Button>
+            </Link>
+            <Button variant="ghost" onClick={() => regenerate(hasPlan)} disabled={busy} className="text-gray-500">
               {hasPlan ? <Shuffle size={16} /> : <Sparkles size={16} />}
-              {busy ? "生成中…" : hasPlan ? "按营养再随机" : `随机生成 ${length} 天`}
+              {busy ? "生成中…" : hasPlan ? "重填推荐占位" : `自动占位 ${length} 天`}
             </Button>
           </div>
         }
       />
       <BmiModeHint />
-      <p className="rounded-xl bg-white px-3 py-2 text-xs text-gray-500 ring-1 ring-gray-100">
-        推荐菜谱只作为抽选池，不会进「我的菜单」。写进这 {length} 天计划的菜才会拿去算采购清单。
-      </p>
+      {hasPlan && userMealCount > 0 ? (
+        <p className="rounded-xl bg-brand-50/80 px-3 py-2 text-xs text-brand-800 ring-1 ring-brand-100">
+          已安排 {userMealCount} 餐「我的」菜单；灰色格为系统营养占位（采购仍按占位计算），点进可改成自己的菜。
+        </p>
+      ) : (
+        <p className="rounded-xl bg-white px-3 py-2 text-xs text-gray-500 ring-1 ring-gray-100">
+          先到「我的菜单」建菜谱并指定到某一餐；需要时可一键自动占位 {length} 天（推荐菜不进「我的菜单」）。
+        </p>
+      )}
 
       {!hasPlan ? (
         <Empty
           action={
             <Button onClick={() => regenerate(false)} disabled={busy}>
-              <Sparkles size={16} /> 按营养随机生成 {length} 天菜品
+              <Sparkles size={16} /> 自动营养占位 {length} 天
             </Button>
           }
         >
-          这段采购周期还没有菜。先按营养目标随机排出 {length} 天，再去采购页看要买哪些整包商品。
+          还没有安排。可先指定「我的菜单」，或用推荐菜谱自动占位 {length} 天再去采购页算要买多少。
         </Empty>
       ) : (
         <>
@@ -112,7 +135,7 @@ export default function PlanPage() {
                   </div>
                   <div className="space-y-1.5">
                     {d.entries.map((e) => (
-                      <MealCell key={e.id} entry={e} tripDates={viewTrips} />
+                      <MealCell key={e.id} entry={e} tripDates={viewTrips} planMode />
                     ))}
                   </div>
                   <div className="mt-3 space-y-1">

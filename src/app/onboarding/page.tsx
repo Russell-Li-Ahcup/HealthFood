@@ -19,8 +19,9 @@ const STEPS = ["选择模式", "基础信息", "活动水平", "饮食与采购"
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const data = useDataStore((s) => s.data);
-  const p = data.profile;
+  const p = useDataStore((s) => s.data.profile);
+  const settings = useDataStore((s) => s.data.settings);
+  const ingredients = useDataStore((s) => s.data.ingredients);
   const [step, setStep] = useState(0);
   const [mode, setMode] = useState<Mode | undefined>(p?.mode);
   const [gender, setGender] = useState<Profile["gender"]>(p?.gender ?? "male");
@@ -30,9 +31,9 @@ export default function OnboardingPage() {
   const [targetWeightKg, setTargetWeight] = useState<number | undefined>(p?.targetWeightKg);
   const [gainPace, setGainPace] = useState<Profile["gainPace"]>(p?.gainPace ?? "steady");
   const [activityLevel, setActivity] = useState(p?.activityLevel ?? 2);
-  const [dietTags, setDietTags] = useState<string[]>(data.settings.dietTags);
-  const [shopping, setShopping] = useState<Settings["shopping"]>(data.settings.shopping);
-  const [storageSpace, setStorageSpace] = useState<Settings["storageSpace"]>(data.settings.storageSpace);
+  const [dietTags, setDietTags] = useState<string[]>(settings.dietTags);
+  const [shopping, setShopping] = useState<Settings["shopping"]>(settings.shopping);
+  const [storageSpace, setStorageSpace] = useState<Settings["storageSpace"]>(settings.storageSpace);
   const [mealsPerDay, setMeals] = useState<3 | 4 | 5 | undefined>(undefined);
   const [busy, setBusy] = useState(false);
 
@@ -191,7 +192,7 @@ export default function OnboardingPage() {
             </div>
             <div>
               <h3 className="mb-2 font-medium">忌口食材（可选）</h3>
-              <DietExclusionEditor ingredients={data.ingredients} value={dietTags} onChange={setDietTags} />
+              <DietExclusionEditor ingredients={ingredients} value={dietTags} onChange={setDietTags} />
             </div>
             {preview && (
               <div className="grid grid-cols-2 gap-3 rounded-xl bg-brand-50 p-4 text-sm sm:grid-cols-4">

@@ -82,7 +82,12 @@ export const IngredientSchema = z.object({
 });
 export type Ingredient = z.infer<typeof IngredientSchema>;
 
-export const RecipeItemSchema = z.object({ ingredientId: z.string(), grams: z.number().positive() });
+export const RecipeItemSchema = z.object({
+  ingredientId: z.string(),
+  grams: z.number().positive(),
+  /** 对应买过的完整商品；有的话扣库存、显示名称都按商品。 */
+  productId: z.string().optional(),
+});
 export type RecipeItem = z.infer<typeof RecipeItemSchema>;
 
 export const RecipeSchema = z.object({
@@ -122,15 +127,25 @@ export const MealEntrySchema = z.object({
   eatOutLevel: z.enum(["light", "normal", "heavy", "custom"]).optional(),
   eatOutKcal: z.number().optional(),
   items: z.array(RecipeItemSchema).default([]),
+  /** 自己配的这餐的名称，例如「牛奶 250ml + 鸡胸 150g」。 */
+  customName: z.string().optional(),
 });
 export type MealEntry = z.infer<typeof MealEntrySchema>;
+
+/** 计划里用户主动安排的餐：自己的菜谱或自己配的一餐（不含系统随机填的推荐菜）。 */
+export function isUserPlannedMeal(entry: MealEntry, recipe?: Recipe | null): boolean {
+  if (entry.kind !== "home" || entry.items.length === 0) return false;
+  if (entry.customName) return true;
+  if (recipe && isUserRecipe(recipe)) return true;
+  return false;
+}
 
 export const ProductSchema = z.object({
   id: z.string(),
   updatedAt: iso,
   /** 超市里看到的完整名称，例如「Lidl Spare Ribs」。 */
   name: z.string(),
-  /** 包装照片（压缩后的 JPEG data URL）。 */
+  /** 包装照片（压到约 18KB 的 JPEG data URL）。 */
   image: z.string().optional(),
   /** 可选：对应食材库，方便入库和对照饮食方案。 */
   ingredientId: z.string().optional(),
@@ -179,8 +194,11 @@ export type ShoppingTrip = z.infer<typeof ShoppingTripSchema>;
 export const InventoryItemSchema = z.object({
   id: z.string(),
   updatedAt: iso,
-  ingredientId: z.string(),
+  /** 和采购清单同一件商品。旧数据可能只有食材。 */
+  productId: z.string().optional(),
+  ingredientId: z.string().optional(),
   quantityG: z.number(),
+  packG: z.number().positive().optional(),
   purchasedAt: z.string(),
   expiresAt: z.string(),
   storage: z.enum(STORAGE_TYPES),

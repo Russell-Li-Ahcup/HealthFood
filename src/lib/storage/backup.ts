@@ -1,6 +1,7 @@
 "use client";
 
 import { parseData, type HealthData } from "@/lib/schema/data";
+import { cancelScheduledPersist } from "@/lib/store/data-store";
 import { saveData } from "./repository";
 import { beginDeviceImport, waitForDeviceStorageWrites } from "./transfer-guard";
 import { waitForSyncIdle } from "@/lib/sync";
@@ -25,6 +26,7 @@ export async function importBackup(file: File): Promise<void> {
     throw new Error("备份文件格式无效");
   }
   await waitForSyncIdle();
+  cancelScheduledPersist();
   await waitForDeviceStorageWrites();
   await saveData({ ...data, meta: { updatedAt: new Date().toISOString() } });
   beginDeviceImport();

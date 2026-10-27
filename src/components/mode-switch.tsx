@@ -2,7 +2,6 @@
 
 import { Dumbbell, Leaf } from "lucide-react";
 import { useState } from "react";
-import { switchMode } from "@/lib/actions";
 import { useTargets } from "@/lib/hooks";
 import { MODE_CONFIG } from "@/lib/nutrition/modes";
 import type { Mode } from "@/lib/schema/data";
@@ -56,6 +55,7 @@ export function ModeBadge() {
   const confirm = async (resetMeals: boolean) => {
     setBusy(true);
     try {
+      const { switchMode } = await import("@/lib/actions");
       await switchMode(next, resetMeals);
       setOpen(false);
       setTarget(null);

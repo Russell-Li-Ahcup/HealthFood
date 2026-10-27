@@ -89,6 +89,7 @@ export const useDataStore = create<DataState>((set, get) => ({
           await saveData(data);
         }
         set({ data, loaded: true, loadError: null });
+        void shrinkProductImagesInBackground(data);
         return;
       } catch (error) {
         lastError = error;
@@ -101,6 +102,7 @@ export const useDataStore = create<DataState>((set, get) => ({
   },
 
   setData: async (data, persist = true) => {
+    cancelScheduledPersist();
     if (persist) await saveData(data);
     set({ data });
   },
@@ -110,7 +112,7 @@ export const useDataStore = create<DataState>((set, get) => ({
     const now = new Date().toISOString();
     const next = touchData(fn(get().data, now));
     set({ data: next });
-    await saveData(next);
+    schedulePersist();
   },
 
   upsert: async (collection, items) => {
@@ -139,4 +141,70 @@ export const useDataStore = create<DataState>((set, get) => ({
 
 function isCompleteProfile(p: Partial<Profile>): p is Profile {
   return Boolean(p.gender && p.birthDate && p.heightCm && p.weightKg && p.activityLevel && p.mode);
+}
+
+/** 压缩旧商品图会卡住首屏，放到数据可读之后再做。 */
+async function shrinkProductImagesInBackground(snapshot: HealthData) {
+  try {
+    const { shrinkOversizedProductImages } = await import("@/lib/image");
+    const shrunk = await shrinkOversizedProductImages(snapshot, new Date().toISOString());
+    if (!shrunk) return;
+    const { data, loaded, loadError } = useDataStore.getState();
+    if (!loaded || loadError || data !== snapshot) return;
+    const next = touchData(shrunk);
+    await saveData(next);
+    if (useDataStore.getState().data === snapshot) useDataStore.setState({ data: next });
+  } catch {
+    // 压缩失败不影响使用，下次启动会再试。
+  }
+}
+
+const PERSIST_DEBOUNCE_MS = 300;
+let persistTimer: ReturnType<typeof setTimeout> | undefined;
+let persistQueued = false;
+let persistChain = Promise.resolve();
+
+function schedulePersist() {
+  persistQueued = true;
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    persistTimer = undefined;
+    void flushPersist();
+  }, PERSIST_DEBOUNCE_MS);
+}
+
+export function cancelScheduledPersist() {
+  persistQueued = false;
+  clearTimeout(persistTimer);
+  persistTimer = undefined;
+}
+
+/** 把内存里最新的数据立刻写进 IndexedDB。切走页面、同步、导入前会调用。 */
+export function flushPersist(): Promise<void> {
+  clearTimeout(persistTimer);
+  persistTimer = undefined;
+  persistChain = persistChain
+    .then(async () => {
+      while (persistQueued) {
+        persistQueued = false;
+        const { data, loaded, loadError } = useDataStore.getState();
+        if (!loaded || loadError) return;
+        await saveData(data);
+      }
+    })
+    .catch(() => {});
+  return persistChain;
+}
+
+export function startPersistFlush(): () => void {
+  const onHide = () => {
+    if (document.visibilityState === "hidden") void flushPersist();
+  };
+  window.addEventListener("pagehide", flushPersist);
+  document.addEventListener("visibilitychange", onHide);
+  return () => {
+    window.removeEventListener("pagehide", flushPersist);
+    document.removeEventListener("visibilitychange", onHide);
+    void flushPersist();
+  };
 }

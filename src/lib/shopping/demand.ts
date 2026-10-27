@@ -1,5 +1,6 @@
 import { addDaysKey, diffDays } from "@/lib/dates";
 import { grossGrams } from "@/lib/inventory/consume";
+import { inventoryIngredientId } from "@/lib/inventory/label";
 import { usableDays } from "@/lib/planner/generate";
 import type { Ingredient, InventoryItem, MealEntry, Product, ShoppingItem, ShoppingTrip } from "@/lib/schema/data";
 import { nextTripAfter } from "./schedule";
@@ -43,9 +44,12 @@ interface TripInput {
 function stockAt(date: string, firstPending: string | undefined, input: TripInput, ing: Map<string, Ingredient>): Map<string, number> {
   const available = new Map<string, number>();
   if (date !== firstPending) return available;
+  const products = new Map(input.products.map((p) => [p.id, p]));
   for (const inv of input.inventory) {
     if (inv.status !== "active" || inv.quantityG <= 0 || inv.expiresAt < date) continue;
-    available.set(inv.ingredientId, (available.get(inv.ingredientId) ?? 0) + inv.quantityG);
+    const ingredientId = inventoryIngredientId(inv, products);
+    if (!ingredientId) continue;
+    available.set(ingredientId, (available.get(ingredientId) ?? 0) + inv.quantityG);
   }
   for (const e of input.entries) {
     if (e.kind !== "home" || e.eaten || e.date < input.today || e.date >= date) continue;

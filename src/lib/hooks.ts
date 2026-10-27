@@ -18,6 +18,11 @@ export function useRecipeMap() {
   return useMemo(() => new Map(recipes.map((r) => [r.id, r])), [recipes]);
 }
 
+export function useProductMap() {
+  const products = useDataStore((s) => s.data.products);
+  return useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
+}
+
 export function useTargets() {
   const profile = useDataStore((s) => s.data.profile);
   const logs = useDataStore((s) => s.data.weightLogs);

@@ -1,10 +1,11 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { AdjustBanner } from "@/components/adjust-banner";
+import { ChartPlaceholder } from "@/components/charts";
 import { BmiModeHint, ModeBadge } from "@/components/mode-switch";
 import { Button, Card, cn, Field, Input, NumberInput, PageTitle, Segmented, Select } from "@/components/ui";
-import { WeightChart } from "@/components/weight-chart";
 import { applyBody, logWeight } from "@/lib/actions";
 import { formatDay, todayKey } from "@/lib/dates";
 import { fmt } from "@/lib/hooks";
@@ -12,6 +13,11 @@ import { MODE_CONFIG } from "@/lib/nutrition/modes";
 import { ACTIVITY_LEVELS, computeTargets, daysToTarget } from "@/lib/nutrition/targets";
 import type { Profile } from "@/lib/schema/data";
 import { useDataStore } from "@/lib/store/data-store";
+
+const WeightChart = dynamic(() => import("@/components/weight-chart"), {
+  ssr: false,
+  loading: () => <ChartPlaceholder height={220} />,
+});
 
 function sameBody(a: Profile, b: Profile) {
   const keys = ["gender", "birthDate", "heightCm", "weightKg", "activityLevel", "gainPace", "targetWeightKg", "baselineWeightKg", "calorieAdjustKcal"] as const;

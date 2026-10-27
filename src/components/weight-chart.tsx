@@ -24,3 +24,5 @@ export function WeightChart({ logs, baseline, target, height = 220 }: { logs: We
     </ResponsiveContainer>
   );
 }
+
+export default WeightChart;

@@ -72,7 +72,7 @@ function isFeasible(recipe: Recipe, date: string, ctx: Ctx): boolean {
     if (!ing) return false;
     if (since < usableDays(ing)) return true;
     return ctx.input.inventory.some(
-      (inv) => inv.status === "active" && inv.ingredientId === ing.id && inv.quantityG > 0 && inv.expiresAt >= date,
+      (inv) => inv.status === "active" && inv.quantityG > 0 && inv.expiresAt >= date && (inv.ingredientId === ing.id || (item.productId && inv.productId === item.productId)),
     );
   });
 }
@@ -104,7 +104,12 @@ function scoreCandidate(recipe: Recipe, scale: number, target: Nutrients, date: 
   let expiry = 0;
   for (const item of recipe.items) {
     const soon = ctx.input.inventory.some(
-      (inv) => inv.status === "active" && inv.ingredientId === item.ingredientId && inv.quantityG > 0 && inv.expiresAt >= date && diffDays(inv.expiresAt, date) <= 3,
+      (inv) =>
+        inv.status === "active" &&
+        inv.quantityG > 0 &&
+        inv.expiresAt >= date &&
+        diffDays(inv.expiresAt, date) <= 3 &&
+        (inv.ingredientId === item.ingredientId || (item.productId && inv.productId === item.productId)),
     );
     if (soon) expiry += 0.5;
   }

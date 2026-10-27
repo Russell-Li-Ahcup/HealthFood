@@ -12,14 +12,15 @@ import { downloadBackup, importBackup } from "@/lib/storage/backup";
 import { useDataStore } from "@/lib/store/data-store";
 
 export default function SettingsPage() {
-  const data = useDataStore((s) => s.data);
-  const [s, setS] = useState<Settings>(data.settings);
+  const settings = useDataStore((s) => s.data.settings);
+  const mode = useDataStore((s) => s.data.profile?.mode ?? "maintain");
+  const ingredients = useDataStore((s) => s.data.ingredients);
+  const [s, setS] = useState<Settings>(settings);
   const [saved, setSaved] = useState(false);
   const [importError, setImportError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const meals = MEALS_FOR_COUNT[s.mealsPerDay];
   const splitTotal = meals.reduce((sum, m) => sum + (s.mealSplit[m] ?? 0), 0);
-  const mode = data.profile?.mode ?? "maintain";
 
   const save = async () => {
     await useDataStore.getState().setSettings({
@@ -87,7 +88,7 @@ export default function SettingsPage() {
       </Card>
 
       <Card title="忌口食材">
-        <DietExclusionEditor ingredients={data.ingredients} value={s.dietTags} onChange={(dietTags) => setS({ ...s, dietTags })} />
+        <DietExclusionEditor ingredients={ingredients} value={s.dietTags} onChange={(dietTags) => setS({ ...s, dietTags })} />
       </Card>
 
       <Card title="数据与同步">
@@ -97,7 +98,7 @@ export default function SettingsPage() {
               <Cloud size={16} /> 云同步设置
             </Button>
           </Link>
-          <Button variant="secondary" onClick={() => downloadBackup(data)}>
+          <Button variant="secondary" onClick={() => downloadBackup(useDataStore.getState().data)}>
             <Download size={16} /> 导出备份
           </Button>
           <Button variant="secondary" onClick={() => fileRef.current?.click()}>

@@ -1,18 +1,19 @@
 "use client";
 
 import { CalendarDays, ChevronRight, ListChecks, ShoppingCart, Sparkles, Target } from "lucide-react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useMemo } from "react";
 import { AdjustBanner } from "@/components/adjust-banner";
-import { FoodGroupRadar, Ring, WeekKcalChart } from "@/components/charts";
+import { ChartPlaceholder, Ring } from "@/components/charts";
 import { MealCell } from "@/components/meal-cell";
 import { BmiModeHint } from "@/components/mode-switch";
 import { Badge, Button, Card, Empty, Progress } from "@/components/ui";
-import { WeightChart } from "@/components/weight-chart";
 import { cycleFromData, generatePlan, markPastMealsEaten } from "@/lib/actions";
 import { diffDays, formatDay, formatDayWeek, isoWeekday, todayKey, WEEKDAY_LABEL } from "@/lib/dates";
-import { fmt, fmtGrams, useIngredientMap, useTargets } from "@/lib/hooks";
+import { fmt, useIngredientMap, useTargets } from "@/lib/hooks";
 import { daysLeft, EXPIRY_STYLE, expiryLevel, expiringSoon } from "@/lib/inventory/expiry";
+import { stockName, stockQtyText } from "@/lib/inventory/label";
 import { FOOD_GROUPS, GROUP_KEYS, groupGrams } from "@/lib/nutrition/foodGroups";
 import { MODE_CONFIG } from "@/lib/nutrition/modes";
 import { daysToTarget } from "@/lib/nutrition/targets";
@@ -20,23 +21,41 @@ import { useCycleView } from "@/lib/plan-view";
 import { tripTotal } from "@/lib/shopping/demand";
 import { useDataStore } from "@/lib/store/data-store";
 
+const WeekKcalChart = dynamic(() => import("@/components/charts-recharts").then((m) => m.WeekKcalChart), {
+  ssr: false,
+  loading: () => <ChartPlaceholder height={200} />,
+});
+const FoodGroupRadar = dynamic(() => import("@/components/charts-recharts").then((m) => m.FoodGroupRadar), {
+  ssr: false,
+  loading: () => <ChartPlaceholder height={220} />,
+});
+const WeightChart = dynamic(() => import("@/components/weight-chart"), {
+  ssr: false,
+  loading: () => <ChartPlaceholder height={140} />,
+});
+
 export default function Dashboard() {
-  const data = useDataStore((s) => s.data);
-  const profile = data.profile;
+  const profile = useDataStore((s) => s.data.profile);
+  const settings = useDataStore((s) => s.data.settings);
+  const shoppingTrips = useDataStore((s) => s.data.shoppingTrips);
+  const mealEntries = useDataStore((s) => s.data.mealEntries);
+  const inventory = useDataStore((s) => s.data.inventory);
+  const products = useDataStore((s) => s.data.products);
   const targets = useTargets();
   const ing = useIngredientMap();
+  const productsMap = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const today = todayKey();
-  const cycle = useMemo(() => cycleFromData(data, today), [data, today]);
+  const cycle = useMemo(() => cycleFromData({ settings, shoppingTrips }, today), [settings, shoppingTrips, today]);
   const { days, tripDates, hasPlan, length } = useCycleView(cycle.start, cycle.end);
   const todayView = days.find((d) => d.date === today);
-  const pastPending = data.mealEntries.filter((e) => e.date < today && e.date >= cycle.start && !e.eaten && e.kind === "home").length;
-  const expiring = expiringSoon(data.inventory, today, 3);
-  const nextTrip = data.shoppingTrips.filter((t) => t.status === "planned" && t.date >= today).sort((a, b) => a.date.localeCompare(b.date))[0];
+  const pastPending = mealEntries.filter((e) => e.date < today && e.date >= cycle.start && !e.eaten && e.kind === "home").length;
+  const expiring = expiringSoon(inventory, today, 3);
+  const nextTrip = shoppingTrips.filter((t) => t.status === "planned" && t.date >= today).sort((a, b) => a.date.localeCompare(b.date))[0];
 
   const usedSoon = useMemo(() => {
-    const upcoming = data.mealEntries.filter((e) => e.date >= today && e.kind === "home" && !e.eaten);
-    return new Set(upcoming.flatMap((e) => e.items.map((i) => i.ingredientId)));
-  }, [data.mealEntries, today]);
+    const upcoming = mealEntries.filter((e) => e.date >= today && e.kind === "home" && !e.eaten);
+    return new Set(upcoming.flatMap((e) => e.items.flatMap((i) => [i.ingredientId, i.productId].filter((id): id is string => Boolean(id)))));
+  }, [mealEntries, today]);
 
   if (!profile || !targets) return null;
   const cfg = MODE_CONFIG[profile.mode];
@@ -119,17 +138,20 @@ export default function Dashboard() {
           }
         >
           {expiring.length === 0 ? (
-            <p className="text-sm text-gray-400">3 天内没有要到期的食材。</p>
+            <p className="text-sm text-gray-400">3 天内没有要到期的商品。</p>
           ) : (
             <ul className="space-y-2">
               {expiring.slice(0, 6).map((i) => {
                 const level = expiryLevel(i.expiresAt, today);
                 const d = daysLeft(i.expiresAt, today);
+                const product = i.productId ? productsMap.get(i.productId) : undefined;
+                const ingredient = i.ingredientId ? ing.get(i.ingredientId) : product?.ingredientId ? ing.get(product.ingredientId) : undefined;
+                const used = (i.productId && usedSoon.has(i.productId)) || (i.ingredientId && usedSoon.has(i.ingredientId));
                 return (
                   <li key={i.id} className="flex items-center justify-between gap-2 text-sm">
                     <span>
-                      {ing.get(i.ingredientId)?.name} <span className="text-xs text-gray-400">{fmtGrams(i.quantityG)}</span>
-                      {!usedSoon.has(i.ingredientId) && d >= 0 && <span className="block text-[11px] text-amber-600">近期菜单没有用到，可以换一餐用掉</span>}
+                      {stockName(i, productsMap, ing)} <span className="text-xs text-gray-400">{stockQtyText(i.quantityG, product, ingredient)}</span>
+                      {!used && d >= 0 && <span className="block text-[11px] text-amber-600">近期菜单没有用到，可以换一餐用掉</span>}
                     </span>
                     <Badge className={EXPIRY_STYLE[level].className}>{EXPIRY_STYLE[level].label(d)}</Badge>
                   </li>
@@ -159,7 +181,7 @@ export default function Dashboard() {
               </p>
               <p className="mt-1 line-clamp-2 text-xs text-gray-400">
                 {nextTrip.items
-                  .map((i) => data.products.find((p) => p.id === i.productId)?.name ?? ing.get(i.ingredientId ?? "")?.name)
+                  .map((i) => products.find((p) => p.id === i.productId)?.name ?? ing.get(i.ingredientId ?? "")?.name)
                   .filter(Boolean)
                   .join("、") || "还没添加商品"}
               </p>

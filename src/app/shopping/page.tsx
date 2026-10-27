@@ -77,7 +77,7 @@ export default function ShoppingPage() {
     <div className="space-y-4">
       <PageTitle
         title="采购清单"
-        subtitle="先按营养排出到下次采购前的菜，再决定买几包。买过的商品会一直留在档案里，下次输入名字就能翻出来。冰箱空位瞄一眼估一下，清单会按位置分组。"
+        subtitle="清单和库存记的是同一件商品。先排出到下次采购前的菜，再决定买几包；买完入库后，菜单里自己配餐也能直接从冰箱拿。"
         action={
           <div className="flex gap-2">
             <Link href="/settings">
@@ -365,6 +365,15 @@ function TripItems({
   );
 }
 
+async function pickCompressedPhoto(file: File | undefined, onOk: (url: string) => void) {
+  if (!file) return;
+  try {
+    onOk(await compressImage(file));
+  } catch (error) {
+    alert(error instanceof Error ? error.message : "照片压缩失败");
+  }
+}
+
 function ProductPhoto({ src, name, large }: { src?: string; name: string; large?: boolean }) {
   const size = large ? "h-28 w-full" : "h-16 w-16";
   if (src) return <img src={src} alt={name} className={cn(size, "rounded-xl object-cover bg-gray-100")} />;
@@ -414,9 +423,7 @@ function QuickAdd({ currentTripId }: { currentTripId?: string }) {
           capture="environment"
           className="hidden"
           onChange={async (e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
-            setImage(await compressImage(file));
+            await pickCompressedPhoto(e.target.files?.[0], setImage);
             e.target.value = "";
           }}
         />
@@ -447,7 +454,7 @@ function QuickAdd({ currentTripId }: { currentTripId?: string }) {
           ))}
         </ul>
       )}
-      <p className="mt-2 text-xs text-gray-400">输入已有名称会直接用档案里的那一件，不会重复新建。</p>
+      <p className="mt-2 text-xs text-gray-400">输入已有名称会直接用档案里的那一件，不会重复新建。包装照会自动压到约 20KB，方便同步。</p>
     </Card>
   );
 }
@@ -538,7 +545,7 @@ function ProductForm({
         ) : (
           <div className="flex h-32 flex-col items-center justify-center gap-1 text-gray-400">
             <Camera size={28} />
-            <span className="text-xs">拍包装照片或从相册选</span>
+            <span className="text-xs">拍包装照片或从相册选（自动压缩）</span>
           </div>
         )}
       </button>
@@ -554,9 +561,7 @@ function ProductForm({
         capture="environment"
         className="hidden"
         onChange={async (e) => {
-          const file = e.target.files?.[0];
-          if (!file) return;
-          setImage(await compressImage(file));
+          await pickCompressedPhoto(e.target.files?.[0], setImage);
           e.target.value = "";
         }}
       />

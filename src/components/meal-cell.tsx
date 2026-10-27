@@ -1,13 +1,17 @@
 "use client";
 
-import { Check, Lock, MoreHorizontal, RefreshCw, Snowflake, Store, TriangleAlert, Unlock, Utensils, Ban, ListChecks, BookOpen, ExternalLink } from "lucide-react";
-import { useMemo, useState } from "react";
-import { markEaten, rerollMeal, setMealKind, setMealRecipe, toggleLock } from "@/lib/actions";
+import { Check, Lock, MoreHorizontal, Plus, RefreshCw, Snowflake, Store, TriangleAlert, Unlock, Utensils, Ban, ListChecks, BookOpen, ExternalLink } from "lucide-react";
+import dynamic from "next/dynamic";
+import { useEffect, useMemo, useState } from "react";
+import { markEaten, rerollMeal, setCustomMeal, setMealKind, setMealRecipe, toggleLock } from "@/lib/actions";
+
+const MealCompose = dynamic(() => import("@/components/meal-compose").then((m) => m.MealCompose), { ssr: false });
+import { amountLabel, serveStyle } from "@/lib/food/serve";
 import { diffDays } from "@/lib/dates";
-import { fmt, useIngredientMap, useRecipeMap } from "@/lib/hooks";
+import { fmt, useIngredientMap, useProductMap, useRecipeMap } from "@/lib/hooks";
 import { itemsNutrients } from "@/lib/nutrition/recipe";
 import { EAT_OUT_LEVELS, eatOutKcal, type EatOutLevel } from "@/lib/planner/eatOut";
-import { isUserRecipe, MEAL_LABEL, type MealEntry } from "@/lib/schema/data";
+import { isUserPlannedMeal, isUserRecipe, MEAL_LABEL, type MealEntry } from "@/lib/schema/data";
 import { lastTripOnOrBefore } from "@/lib/shopping/schedule";
 import { useDataStore } from "@/lib/store/data-store";
 import { Button, cn, Input, Modal, NumberInput } from "./ui";
@@ -29,14 +33,34 @@ export function useShelfRisk(entry: MealEntry, tripDates: string[]) {
   }, [entry, tripDates, ing]);
 }
 
-export function MealCell({ entry, tripDates, compact }: { entry: MealEntry; tripDates: string[]; compact?: boolean }) {
+export function MealCell({ entry, tripDates, compact, planMode }: { entry: MealEntry; tripDates: string[]; compact?: boolean; planMode?: boolean }) {
   const recipes = useRecipeMap();
   const ing = useIngredientMap();
+  const products = useProductMap();
   const [menu, setMenu] = useState(false);
+  const [startView, setStartView] = useState<"main" | "compose">("main");
   const [busy, setBusy] = useState(false);
   const recipe = entry.recipeId ? recipes.get(entry.recipeId) : undefined;
+  const userPlanned = isUserPlannedMeal(entry, recipe);
+  const presetPlaceholder = Boolean(planMode && entry.kind === "home" && entry.items.length > 0 && !userPlanned);
   const n = itemsNutrients(entry.items, ing);
   const { freeze, risk } = useShelfRisk(entry, tripDates);
+  const title =
+    entry.customName ||
+    recipe?.name ||
+    (entry.items.length > 0
+      ? entry.items
+          .map((i) => {
+            const product = i.productId ? products.get(i.productId) : undefined;
+            const ingredient = ing.get(i.ingredientId);
+            return `${product?.name ?? ingredient?.name ?? "食材"} ${amountLabel(i.grams, serveStyle(product, ingredient))}`;
+          })
+          .join(" + ")
+      : "还没定菜");
+  const openMenu = (view: "main" | "compose" = "main") => {
+    setStartView(view);
+    setMenu(true);
+  };
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -52,7 +76,15 @@ export function MealCell({ entry, tripDates, compact }: { entry: MealEntry; trip
       <div
         className={cn(
           "group relative rounded-xl p-2.5 text-left ring-1 transition",
-          entry.kind === "eat_out" ? "bg-sky-50 ring-sky-100" : entry.kind === "skip" ? "bg-gray-50 ring-gray-100" : "bg-white ring-gray-100 hover:ring-brand-200",
+          entry.kind === "eat_out"
+            ? "bg-sky-50 ring-sky-100"
+            : entry.kind === "skip"
+              ? "bg-gray-50 ring-gray-100"
+              : presetPlaceholder
+                ? "bg-gray-50/60 ring-gray-100/80 hover:ring-gray-200"
+                : planMode && userPlanned
+                  ? "bg-white ring-2 ring-brand-200 shadow-sm hover:ring-brand-300"
+                  : "bg-white ring-gray-100 hover:ring-brand-200",
           entry.eaten && "opacity-60",
           busy && "animate-pulse",
         )}
@@ -64,18 +96,43 @@ export function MealCell({ entry, tripDates, compact }: { entry: MealEntry; trip
             {entry.eaten && <Check size={12} className="text-brand-600" />}
             {freeze.length > 0 && <Snowflake size={12} className="text-sky-500" aria-label="需冷冻保存" />}
             {risk.length > 0 && <TriangleAlert size={12} className="text-amber-500" aria-label="保质期风险" />}
-            <button onClick={() => setMenu(true)} className="rounded p-0.5 hover:bg-gray-100 hover:text-gray-700" aria-label="操作">
+            <button onClick={() => openMenu("main")} className="rounded p-0.5 hover:bg-gray-100 hover:text-gray-700" aria-label="操作">
               <MoreHorizontal size={14} />
             </button>
           </div>
         </div>
-        <button className="mt-0.5 block w-full text-left" onClick={() => setMenu(true)}>
+        <button className="mt-0.5 block w-full text-left" onClick={() => openMenu(entry.kind === "home" && entry.items.length === 0 ? "compose" : "main")}>
           {entry.kind === "home" && (
             <>
-              <div className={cn("font-medium leading-snug text-gray-800", compact ? "text-sm" : "text-[13px]")}>{recipe?.name ?? "暂无可用菜谱"}</div>
-              <div className="mt-0.5 text-[11px] text-gray-400">
-                {fmt(n.kcal)} 千卡 · 蛋白 {fmt(n.proteinG)}g{entry.scale !== 1 && ` · ${entry.scale} 份`}
-              </div>
+              {presetPlaceholder ? (
+                <>
+                  <div className="text-[12px] leading-snug text-gray-400">营养占位（推荐菜谱）</div>
+                  <div className="mt-0.5 truncate text-[10px] text-gray-300" title={title}>
+                    {recipe?.name ?? title}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-gray-400">
+                    {fmt(n.kcal)} 千卡 · 蛋白 {fmt(n.proteinG)}g{entry.scale !== 1 && ` · ${entry.scale} 份`}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-start gap-1">
+                    {planMode && userPlanned && (
+                      <span className="mt-0.5 shrink-0 rounded bg-brand-100 px-1 py-px text-[9px] font-semibold text-brand-700">我的</span>
+                    )}
+                    <div className={cn("min-w-0 flex-1 font-medium leading-snug text-gray-800", compact ? "text-sm" : "text-[13px]")}>{title}</div>
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-gray-400">
+                    {entry.items.length > 0 ? (
+                      <>
+                        {fmt(n.kcal)} 千卡 · 蛋白 {fmt(n.proteinG)}g{entry.scale !== 1 && ` · ${entry.scale} 份`}
+                      </>
+                    ) : (
+                      "点这里自己配，或指定菜单"
+                    )}
+                  </div>
+                </>
+              )}
             </>
           )}
           {entry.kind === "eat_out" && (
@@ -90,7 +147,18 @@ export function MealCell({ entry, tripDates, compact }: { entry: MealEntry; trip
           )}
           {entry.kind === "skip" && <div className="text-[13px] text-gray-400">不吃</div>}
         </button>
-        {!compact && entry.kind === "home" && !entry.locked && !entry.eaten && (
+        {entry.kind === "home" && !entry.eaten && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              openMenu("compose");
+            }}
+            className="mt-1 inline-flex items-center gap-0.5 rounded-md bg-brand-50 px-1.5 py-0.5 text-[11px] font-medium text-brand-700"
+          >
+            <Plus size={11} /> 自己配
+          </button>
+        )}
+        {!compact && !presetPlaceholder && entry.kind === "home" && !entry.locked && !entry.eaten && entry.items.length > 0 && (
           <button
             onClick={() => run(() => rerollMeal(entry))}
             className="absolute bottom-1.5 right-1.5 hidden rounded-md bg-white p-1 text-gray-400 shadow-sm ring-1 ring-gray-100 hover:text-brand-600 group-hover:block"
@@ -100,7 +168,7 @@ export function MealCell({ entry, tripDates, compact }: { entry: MealEntry; trip
           </button>
         )}
       </div>
-      <MealMenu entry={entry} open={menu} onClose={() => setMenu(false)} run={run} freeze={freeze} risk={risk} />
+      {menu && <MealMenu entry={entry} open startView={startView} onClose={() => setMenu(false)} run={run} freeze={freeze} risk={risk} />}
     </>
   );
 }
@@ -108,6 +176,7 @@ export function MealCell({ entry, tripDates, compact }: { entry: MealEntry; trip
 function MealMenu({
   entry,
   open,
+  startView,
   onClose,
   run,
   freeze,
@@ -115,6 +184,7 @@ function MealMenu({
 }: {
   entry: MealEntry;
   open: boolean;
+  startView: "main" | "compose";
   onClose: () => void;
   run: (fn: () => Promise<void>) => Promise<void>;
   freeze: string[];
@@ -122,13 +192,18 @@ function MealMenu({
 }) {
   const recipes = useDataStore((s) => s.data.recipes);
   const ing = useIngredientMap();
+  const products = useProductMap();
   const recipeMap = useRecipeMap();
-  const [view, setView] = useState<"main" | "eatout" | "pick">("main");
+  const [view, setView] = useState<"main" | "eatout" | "pick" | "compose">(startView);
   const [level, setLevel] = useState<EatOutLevel>(entry.eatOutLevel ?? "normal");
   const [custom, setCustom] = useState<number | undefined>(entry.eatOutKcal ?? 800);
   const [query, setQuery] = useState("");
   const recipe = entry.recipeId ? recipeMap.get(entry.recipeId) : undefined;
   const type = entry.mealType === "snack2" ? "snack" : entry.mealType;
+
+  useEffect(() => {
+    if (open) setView(startView);
+  }, [open, startView]);
 
   const act = (fn: () => Promise<void>) => {
     onClose();
@@ -142,24 +217,36 @@ function MealMenu({
   };
 
   return (
-    <Modal open={open} onClose={close} title={`${entry.date} ${MEAL_LABEL[entry.mealType]}`}>
+    <Modal open={open} onClose={close} title={`${entry.date} ${MEAL_LABEL[entry.mealType]}`} wide={view === "compose"}>
+      {view === "compose" && (
+        <MealCompose
+          entry={entry}
+          onBack={() => setView("main")}
+          onSave={(items, customName, saveRecipe) => act(() => setCustomMeal(entry, items, { name: customName, saveRecipe }))}
+        />
+      )}
       {view === "main" && (
         <div className="space-y-4">
-          {entry.kind === "home" && recipe && (
+          {entry.kind === "home" && (recipe || entry.customName || entry.items.length > 0) && (
             <div className="rounded-xl bg-gray-50 p-3">
-              <div className="font-semibold">{recipe.name}</div>
+              <div className="font-semibold">{entry.customName || recipe?.name || "自己配的一餐"}</div>
               <div className="mt-1 text-xs text-gray-500">
-                {entry.scale} 份 · {fmt(itemsNutrients(entry.items, ing).kcal)} 千卡 · 约 {recipe.cookMinutes} 分钟
+                {entry.scale} 份 · {fmt(itemsNutrients(entry.items, ing).kcal)} 千卡
+                {recipe ? ` · 约 ${recipe.cookMinutes} 分钟` : ""}
               </div>
               <ul className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                {entry.items.map((i) => (
-                  <li key={i.ingredientId} className="flex justify-between">
-                    <span>{ing.get(i.ingredientId)?.name ?? "已删除食材"}</span>
-                    <span className="text-gray-500">{i.grams} g</span>
-                  </li>
-                ))}
+                {entry.items.map((i) => {
+                  const product = i.productId ? products.get(i.productId) : undefined;
+                  const style = serveStyle(product, ing.get(i.ingredientId));
+                  return (
+                    <li key={`${i.productId ?? ""}-${i.ingredientId}`} className="flex justify-between gap-2">
+                      <span className="truncate">{product?.name ?? ing.get(i.ingredientId)?.name ?? "已删除"}</span>
+                      <span className="shrink-0 text-gray-500">{amountLabel(i.grams, style)}</span>
+                    </li>
+                  );
+                })}
               </ul>
-              {(recipe.guideUrl || recipe.guideNotes) && (
+              {(recipe?.guideUrl || recipe?.guideNotes) && (
                 <div className="mt-2 space-y-1 border-t border-gray-200/80 pt-2">
                   {recipe.guideUrl && (
                     <a
@@ -187,6 +274,12 @@ function MealMenu({
             </div>
           )}
           <div className="grid grid-cols-2 gap-2">
+            <Button onClick={() => setView("compose")}>
+              <Plus size={16} /> 自己配这餐
+            </Button>
+            <Button variant="secondary" onClick={() => setView("pick")}>
+              <BookOpen size={16} /> 指定菜单
+            </Button>
             {entry.kind === "home" && !entry.eaten && (
               <Button variant="secondary" onClick={() => act(() => rerollMeal(entry))} disabled={entry.locked}>
                 <RefreshCw size={16} /> 换一个
@@ -197,9 +290,6 @@ function MealMenu({
                 {entry.locked ? <Unlock size={16} /> : <Lock size={16} />} {entry.locked ? "解除锁定" : "锁定这餐"}
               </Button>
             )}
-            <Button variant="secondary" onClick={() => setView("pick")}>
-              <BookOpen size={16} /> 指定菜单
-            </Button>
             {entry.kind !== "eat_out" && (
               <Button variant="secondary" onClick={() => setView("eatout")}>
                 <Store size={16} /> 外出就餐

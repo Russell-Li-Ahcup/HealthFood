@@ -1,18 +1,25 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element -- 商品照片是本地压缩后的 data URL */
+
 import { Plus, Snowflake, Trash2, CheckCheck, Pencil } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Badge, Button, Card, cn, Empty, Field, Input, Modal, NumberInput, PageTitle, Segmented, Select } from "@/components/ui";
 import { usableDays } from "@/lib/planner/generate";
+import { saveInventoryLot } from "@/lib/actions";
 import { addDaysKey, diffDays, formatDay, todayKey, weekStartOf } from "@/lib/dates";
-import { fmt, fmtGrams, useIngredientMap } from "@/lib/hooks";
+import { serveStyle } from "@/lib/food/serve";
+import { fmtGrams, useIngredientMap, useProductMap } from "@/lib/hooks";
 import { daysLeft, EXPIRY_STYLE, expiryLevel } from "@/lib/inventory/expiry";
-import { generateId, STORAGE_LABEL, type InventoryItem, type StorageType } from "@/lib/schema/data";
+import { stockName, stockQtyText } from "@/lib/inventory/label";
+import { generateId, STORAGE_LABEL, type InventoryItem, type Product, type StorageType } from "@/lib/schema/data";
+import { searchProducts } from "@/lib/shopping/catalog";
 import { useDataStore } from "@/lib/store/data-store";
 
 export default function InventoryPage() {
   const inventory = useDataStore((s) => s.data.inventory);
   const ing = useIngredientMap();
+  const products = useProductMap();
   const today = todayKey();
   const [tab, setTab] = useState<"active" | "history">("active");
   const [editing, setEditing] = useState<InventoryItem | "new" | null>(null);
@@ -31,7 +38,7 @@ export default function InventoryPage() {
     <div className="space-y-4">
       <PageTitle
         title="库存与保质期"
-        subtitle="完成采购后自动入库，标记已吃时按到期日先后自动扣减"
+        subtitle="和采购清单一样按商品记。完成采购后自动入库，标记已吃时按到期日先后扣减"
         action={
           <Button onClick={() => setEditing("new")}>
             <Plus size={16} /> 手动添加
@@ -57,26 +64,30 @@ export default function InventoryPage() {
 
       {tab === "active" &&
         (active.length === 0 ? (
-          <Empty>库存是空的。完成一次采购，或手动添加家里已有的食材。</Empty>
+          <Empty>库存是空的。完成一次采购，或把家里已有的商品加进来。</Empty>
         ) : (
           <Card className="!p-0">
             <ul className="divide-y divide-gray-50">
               {active.map((item) => {
-                const ingredient = ing.get(item.ingredientId);
+                const product = item.productId ? products.get(item.productId) : undefined;
+                const ingredient = item.ingredientId ? ing.get(item.ingredientId) : product?.ingredientId ? ing.get(product.ingredientId) : undefined;
                 const d = daysLeft(item.expiresAt, today);
                 const level = expiryLevel(item.expiresAt, today);
                 return (
                   <li key={item.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+                    {product?.image ? (
+                      <img src={product.image} alt="" className="h-12 w-12 rounded-xl object-cover bg-gray-100" />
+                    ) : null}
                     <div className="min-w-32 flex-1">
                       <div className="flex items-center gap-2 font-medium">
-                        {ingredient?.name ?? "已删除食材"}
+                        {stockName(item, products, ing)}
                         {item.storage === "freezer" && <Snowflake size={14} className="text-sky-500" />}
                       </div>
                       <div className="text-xs text-gray-400">
                         {STORAGE_LABEL[item.storage]} · {formatDay(item.purchasedAt)} 买入 · {formatDay(item.expiresAt)} 到期
                       </div>
                     </div>
-                    <span className="text-sm font-medium">{fmtGrams(item.quantityG)}</span>
+                    <span className="text-sm font-medium">{stockQtyText(item.quantityG, product, ingredient)}</span>
                     <Badge className={EXPIRY_STYLE[level].className}>{EXPIRY_STYLE[level].label(d)}</Badge>
                     <div className="flex gap-1">
                       <Button size="sm" variant="ghost" onClick={() => setEditing(item)} title="编辑">
@@ -105,7 +116,7 @@ export default function InventoryPage() {
               {history.map((item) => (
                 <li key={item.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
                   <span>
-                    {ing.get(item.ingredientId)?.name ?? "已删除食材"}
+                    {stockName(item, products, ing)}
                     <span className="ml-2 text-xs text-gray-400">{formatDay(item.purchasedAt)} 买入</span>
                   </span>
                   <span className="flex items-center gap-2">
@@ -141,35 +152,81 @@ function SummaryCard({ label, value, className }: { label: string; value: number
 
 function InventoryEditor({ item, onClose }: { item: InventoryItem | null; onClose: () => void }) {
   const ingredients = useDataStore((s) => s.data.ingredients);
+  const catalog = useDataStore((s) => s.data.products);
   const ing = useIngredientMap();
   const today = todayKey();
-  const [ingredientId, setIngredientId] = useState(item?.ingredientId ?? ingredients[0]?.id ?? "");
-  const [quantityG, setQuantity] = useState<number | undefined>(item?.quantityG ?? 500);
-  const [purchasedAt, setPurchasedAt] = useState(item?.purchasedAt ?? today);
+  const existing = item?.productId ? catalog.find((p) => p.id === item.productId) : undefined;
+  const [query, setQuery] = useState(existing?.name ?? "");
+  const [product, setProduct] = useState<Product | undefined>(existing);
+  const [ingredientId, setIngredientId] = useState(item?.ingredientId ?? existing?.ingredientId ?? "");
   const ingredient = ing.get(ingredientId);
+  const style = serveStyle(product, ingredient);
+  const [amount, setAmount] = useState<number | undefined>(item ? style.fromGrams(item.quantityG) : style.defaultAmount);
+  const [purchasedAt, setPurchasedAt] = useState(item?.purchasedAt ?? today);
   const [storage, setStorage] = useState<StorageType>(item?.storage ?? ingredient?.storage ?? "fridge");
-  const autoExpiry = ingredient ? addDaysKey(purchasedAt, storage === "freezer" ? usableDays(ingredient) : ingredient.shelfLifeDays) : purchasedAt;
+  const autoExpiry = ingredient ? addDaysKey(purchasedAt, storage === "freezer" ? usableDays(ingredient) : ingredient.shelfLifeDays) : addDaysKey(purchasedAt, 7);
   const [expiresAt, setExpiresAt] = useState(item?.expiresAt ?? "");
+  const hits = query.trim() ? searchProducts(catalog, query).slice(0, 6) : catalog.slice(0, 6);
+
+  const grams = amount && amount > 0 ? style.toGrams(amount) : 0;
+  const pick = (p: Product) => {
+    setProduct(p);
+    setQuery(p.name);
+    setIngredientId(p.ingredientId ?? "");
+    const next = serveStyle(p, p.ingredientId ? ing.get(p.ingredientId) : undefined);
+    setAmount(next.defaultAmount);
+    setStorage(p.ingredientId ? (ing.get(p.ingredientId)?.storage ?? "fridge") : "fridge");
+    setExpiresAt("");
+  };
 
   const save = async () => {
-    if (!ingredientId || !quantityG) return;
-    await useDataStore.getState().upsert("inventory", {
-      id: item?.id ?? generateId(),
-      ingredientId,
-      quantityG,
+    const label = product?.name ?? query.trim();
+    if (!label || grams <= 0) return;
+    await saveInventoryLot({
+      id: item?.id,
+      product: {
+        id: product?.id ?? generateId(),
+        name: label,
+        image: product?.image,
+        ingredientId: ingredientId || product?.ingredientId,
+        packG: product?.packG,
+        price: product?.price,
+        store: product?.store,
+        repeat: product?.repeat ?? true,
+        lastBoughtAt: product?.lastBoughtAt,
+        boughtCount: product?.boughtCount ?? 0,
+      },
+      ingredientId: ingredientId || product?.ingredientId,
+      quantityG: grams,
+      packG: product?.packG,
       purchasedAt,
       expiresAt: expiresAt || autoExpiry,
       storage,
       sourceTripId: item?.sourceTripId,
-      status: "active",
     });
     onClose();
   };
 
   return (
     <Modal open onClose={onClose} title={item ? "编辑库存" : "添加库存"}>
+      <p className="mb-3 text-sm text-gray-500">记的是买回来的那件商品，和采购清单同一套。</p>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="食材" className="sm:col-span-2">
+        <Field label="商品" className="sm:col-span-2">
+          <Input value={query} placeholder="搜档案里的商品，或输入新名字" onChange={(e) => setQuery(e.target.value)} />
+          {!item && hits.length > 0 && (
+            <ul className="mt-2 max-h-36 overflow-y-auto rounded-xl ring-1 ring-gray-100">
+              {hits.map((p) => (
+                <li key={p.id}>
+                  <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50" onClick={() => pick(p)}>
+                    {p.image ? <img src={p.image} alt="" className="h-8 w-8 rounded-lg object-cover" /> : null}
+                    {p.name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Field>
+        <Field label="对应食材（算营养和保质期）" className="sm:col-span-2">
           <Select
             value={ingredientId}
             onChange={(e) => {
@@ -177,8 +234,8 @@ function InventoryEditor({ item, onClose }: { item: InventoryItem | null; onClos
               setStorage(ing.get(e.target.value)?.storage ?? "fridge");
               setExpiresAt("");
             }}
-            disabled={Boolean(item)}
           >
+            <option value="">先不对应</option>
             {ingredients.map((i) => (
               <option key={i.id} value={i.id}>
                 {i.name}
@@ -186,8 +243,8 @@ function InventoryEditor({ item, onClose }: { item: InventoryItem | null; onClos
             ))}
           </Select>
         </Field>
-        <Field label="数量（克，毛重）">
-          <NumberInput value={quantityG} onChange={setQuantity} />
+        <Field label={`还剩多少（${style.unitLabel}）`} hint={style.hint}>
+          <NumberInput value={amount} onChange={setAmount} />
         </Field>
         <Field label="存放方式">
           <Select
@@ -222,16 +279,10 @@ function InventoryEditor({ item, onClose }: { item: InventoryItem | null; onClos
         <Button variant="ghost" onClick={onClose}>
           取消
         </Button>
-        <Button onClick={save} disabled={!ingredientId || !quantityG}>
+        <Button onClick={() => void save()} disabled={!query.trim() || grams <= 0}>
           保存
         </Button>
       </div>
-      {ingredient && (
-        <p className="mt-2 text-xs text-gray-400">
-          {ingredient.name}：{STORAGE_LABEL[ingredient.storage]}保存 {ingredient.shelfLifeDays} 天
-          {ingredient.freezable && `，冷冻可存 ${ingredient.frozenShelfLifeDays} 天`}。约 {fmt(quantityG ?? 0)} g。
-        </p>
-      )}
     </Modal>
   );
 }

@@ -4,7 +4,7 @@ import { get, set } from "idb-keyval";
 import { getSyncOptions, loadSyncConfig, SYNC_CONFIG_CHANGED_EVENT, type SyncConfig } from "@/lib/storage/local";
 import { markDataClean, saveData } from "@/lib/storage/repository";
 import { assertDeviceStorageWritable, writeDeviceStorage } from "@/lib/storage/transfer-guard";
-import { useDataStore } from "@/lib/store/data-store";
+import { flushPersist, useDataStore } from "@/lib/store/data-store";
 import { isEtagConflict } from "./errors";
 import { formatMergeMessage, mergeData, type MergeStats } from "./merge";
 import { s3Adapter } from "./s3";
@@ -29,6 +29,7 @@ function adapterFor(config: SyncConfig) {
 }
 
 async function runSync(): Promise<void> {
+  await flushPersist();
   const store = useDataStore.getState();
   try {
     const config = await loadSyncConfig();

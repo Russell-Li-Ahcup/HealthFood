@@ -8,7 +8,8 @@ import { computeTargets } from "@/lib/nutrition/targets";
 import { dayNutrients, generateWeek, usableDays } from "@/lib/planner/generate";
 import { newSeed } from "@/lib/planner/random";
 import type { EatOutLevel } from "@/lib/planner/eatOut";
-import { generateId, type HealthData, type MealEntry, type Mode, type Product, type Profile, type ShoppingItem, type ShoppingTrip } from "@/lib/schema/data";
+import { generateId, type HealthData, type MealEntry, type MealType, type Mode, type Product, type Profile, type RecipeItem, type ShoppingItem, type ShoppingTrip, type StorageType } from "@/lib/schema/data";
+import { amountLabel, serveStyle } from "@/lib/food/serve";
 import { reuseProduct } from "@/lib/shopping/catalog";
 import { buildTrips, tripId } from "@/lib/shopping/demand";
 import { cycleContaining, lastTripOnOrBefore, shoppingDates } from "@/lib/shopping/schedule";
@@ -16,6 +17,25 @@ import { removeIn, upsertIn, useDataStore } from "@/lib/store/data-store";
 
 function seedFor(d: HealthData, weekStart: string): number {
   return d.settings.weekSeeds[weekStart] ?? 1;
+}
+
+function sameMeal(a: MealEntry, b: MealEntry): boolean {
+  if (
+    a.date !== b.date ||
+    a.mealType !== b.mealType ||
+    a.kind !== b.kind ||
+    a.recipeId !== b.recipeId ||
+    a.scale !== b.scale ||
+    a.locked !== b.locked ||
+    a.eaten !== b.eaten ||
+    a.eatOutLevel !== b.eatOutLevel ||
+    a.eatOutKcal !== b.eatOutKcal ||
+    a.customName !== b.customName ||
+    a.items.length !== b.items.length
+  ) {
+    return false;
+  }
+  return a.items.every((item, i) => item.ingredientId === b.items[i].ingredientId && item.grams === b.items[i].grams && item.productId === b.items[i].productId);
 }
 
 /**
@@ -91,7 +111,7 @@ export function planWeekIn(d: HealthData, now: string, opts: PlanOptions = {}): 
   const before = new Map(data.mealEntries.map((e) => [e.id, e]));
   const changed = entries.filter((e) => {
     const prev = before.get(e.id);
-    return !prev || JSON.stringify({ ...prev, updatedAt: "" }) !== JSON.stringify({ ...e, updatedAt: "" });
+    return !prev || !sameMeal(prev, e);
   });
   const keep = new Set(entries.map((e) => e.id));
   const stale = data.mealEntries.filter((e) => days.has(e.date) && e.date >= fromDate && !keep.has(e.id) && !e.eaten).map((e) => e.id);
@@ -220,8 +240,57 @@ export async function setMealRecipe(entry: MealEntry, recipeId: string) {
   await store().update((d, now) => {
     const recipe = d.recipes.find((r) => r.id === recipeId);
     if (!recipe) return d;
-    const next: MealEntry = { ...entry, kind: "home", recipeId, scale: 1, items: recipe.items.map((i) => ({ ...i })), locked: true };
+    const next: MealEntry = { ...entry, kind: "home", recipeId, customName: undefined, scale: 1, items: recipe.items.map((i) => ({ ...i })), locked: true };
     return rebalanceDay(upsertIn(d, "mealEntries", [next], now), now, entry);
+  });
+}
+
+function customMealTitle(items: RecipeItem[], d: HealthData): string {
+  const ing = new Map(d.ingredients.map((i) => [i.id, i]));
+  const products = new Map(d.products.map((p) => [p.id, p]));
+  return items
+    .map((item) => {
+      const product = item.productId ? products.get(item.productId) : undefined;
+      const ingredient = ing.get(item.ingredientId);
+      const name = product?.name ?? ingredient?.name ?? "食材";
+      return `${name} ${amountLabel(item.grams, serveStyle(product, ingredient))}`;
+    })
+    .join(" + ");
+}
+
+/** 自己配一餐：按商品/食材自由组合，并锁定以免被随机冲掉。 */
+export async function setCustomMeal(entry: MealEntry, items: RecipeItem[], opts?: { name?: string; saveRecipe?: boolean }) {
+  await store().update((d, now) => {
+    if (items.length === 0) return d;
+    const named = (opts?.name ?? "").trim() || customMealTitle(items, d);
+    let data = d;
+    let recipeId: string | undefined;
+    if (opts?.saveRecipe) {
+      const slot: MealType = entry.mealType === "snack2" ? "snack" : entry.mealType;
+      const recipe = {
+        id: generateId(),
+        name: named.length > 24 ? named.slice(0, 24) : named,
+        mealTypes: [slot],
+        tags: [] as string[],
+        cookMinutes: 10,
+        items,
+        mine: true,
+      };
+      data = upsertIn(data, "recipes", [recipe], now);
+      recipeId = recipe.id;
+    }
+    const next: MealEntry = {
+      ...entry,
+      kind: "home",
+      recipeId,
+      customName: named,
+      items,
+      scale: 1,
+      locked: true,
+      eatOutLevel: undefined,
+      eatOutKcal: undefined,
+    };
+    return rebalanceDay(upsertIn(data, "mealEntries", [next], now), now, entry);
   });
 }
 
@@ -269,7 +338,8 @@ export async function markEaten(entry: MealEntry, eaten: boolean) {
     let data = upsertIn(d, "mealEntries", [{ ...entry, eaten }], now);
     if (eaten && entry.kind === "home") {
       const ing = new Map(d.ingredients.map((i) => [i.id, i]));
-      const changed = consumeForEntry(d.inventory, entry, ing);
+      const products = new Map(d.products.map((p) => [p.id, p]));
+      const changed = consumeForEntry(d.inventory, entry, ing, products);
       if (changed.length > 0) data = upsertIn(data, "inventory", changed, now);
     }
     return data;
@@ -281,10 +351,11 @@ export async function markPastMealsEaten() {
   const pending = store().data.mealEntries.filter((e) => e.date < today && !e.eaten && e.kind === "home");
   await store().update((d, now) => {
     const ing = new Map(d.ingredients.map((i) => [i.id, i]));
+    const products = new Map(d.products.map((p) => [p.id, p]));
     let data = d;
     for (const e of pending) {
       data = upsertIn(data, "mealEntries", [{ ...e, eaten: true }], now);
-      const changed = consumeForEntry(data.inventory, e, ing);
+      const changed = consumeForEntry(data.inventory, e, ing, products);
       if (changed.length > 0) data = upsertIn(data, "inventory", changed, now);
     }
     return data;
@@ -402,29 +473,42 @@ export async function deleteProduct(productId: string) {
   });
 }
 
-/** 完成采购：按实际购买量写入库存，冷冻的按冷冻保质期计算到期日。 */
+function lotQuantityG(item: ShoppingItem, product?: Product, ingredient?: { unitWeightG: number; purchaseUnit: string }): number {
+  if (item.buyG > 0) return item.buyG;
+  const packG = item.packG ?? product?.packG;
+  if (packG) return item.buyQty * packG;
+  if (ingredient && ingredient.purchaseUnit !== "g") return item.buyQty * (ingredient.unitWeightG || 1);
+  return item.buyQty;
+}
+
+/** 完成采购：按买到的商品写入库存（和清单同一件），冷冻的按冷冻保质期算到期日。 */
 export async function completeTrip(tripId: string, items: ShoppingItem[], purchasedAt: string) {
   await store().update((d, now) => {
     const trip = d.shoppingTrips.find((t) => t.id === tripId);
     if (!trip) return d;
     const ing = new Map(d.ingredients.map((i) => [i.id, i]));
     const inventory = items
-      .filter((i) => i.buyG > 0 && i.ingredientId && ing.has(i.ingredientId))
+      .filter((i) => i.buyQty > 0 && (i.productId || i.ingredientId))
       .map((i) => {
-        const ingredientId = i.ingredientId as string;
-        const ingredient = ing.get(ingredientId)!;
-        const days = i.freeze ? usableDays(ingredient) : ingredient.shelfLifeDays;
+        const product = i.productId ? d.products.find((p) => p.id === i.productId) : undefined;
+        const ingredientId = i.ingredientId || product?.ingredientId;
+        const ingredient = ingredientId ? ing.get(ingredientId) : undefined;
+        const quantityG = lotQuantityG(i, product, ingredient);
+        const days = i.freeze ? (ingredient ? usableDays(ingredient) : 90) : (ingredient?.shelfLifeDays ?? 7);
         return {
           id: generateId(),
+          productId: i.productId || product?.id,
           ingredientId,
-          quantityG: i.buyG,
+          quantityG,
+          packG: i.packG ?? product?.packG,
           purchasedAt,
           expiresAt: addDaysKey(purchasedAt, days),
-          storage: i.freeze ? ("freezer" as const) : ingredient.storage,
+          storage: i.freeze ? ("freezer" as const) : (ingredient?.storage ?? "fridge"),
           sourceTripId: tripId,
           status: "active" as const,
         };
-      });
+      })
+      .filter((lot) => lot.quantityG > 0);
     const bought: Product[] = [];
     for (const i of items) {
       if (i.buyQty <= 0 || !i.productId) continue;
@@ -446,6 +530,53 @@ export async function reopenTrip(tripId: string) {
     let data = removeIn(d, "inventory", added, now);
     data = upsertIn(data, "shoppingTrips", [{ ...trip, status: "planned" }], now);
     return syncTripsIn(data, now);
+  });
+}
+
+/** 库存也按商品记。没有档案时会顺手建一条商品。 */
+export async function saveInventoryLot(input: {
+  id?: string;
+  product?: Omit<Product, "updatedAt">;
+  productId?: string;
+  ingredientId?: string;
+  quantityG: number;
+  packG?: number;
+  purchasedAt: string;
+  expiresAt: string;
+  storage: StorageType;
+  sourceTripId?: string;
+}) {
+  await store().update((d, now) => {
+    let data = d;
+    let productId = input.productId;
+    let ingredientId = input.ingredientId;
+    let packG = input.packG;
+    if (input.product) {
+      const saved = reuseProduct(data.products, input.product);
+      data = upsertIn(data, "products", [saved], now);
+      productId = saved.id;
+      ingredientId = saved.ingredientId ?? ingredientId;
+      packG = saved.packG ?? packG;
+    }
+    return upsertIn(
+      data,
+      "inventory",
+      [
+        {
+          id: input.id ?? generateId(),
+          productId,
+          ingredientId,
+          quantityG: input.quantityG,
+          packG,
+          purchasedAt: input.purchasedAt,
+          expiresAt: input.expiresAt,
+          storage: input.storage,
+          sourceTripId: input.sourceTripId,
+          status: "active",
+        },
+      ],
+      now,
+    );
   });
 }
 
